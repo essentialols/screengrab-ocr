@@ -1,0 +1,4 @@
+.DS_Store
+screengrab-ocr
+*.o
+.build/
