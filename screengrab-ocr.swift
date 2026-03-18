@@ -1,105 +1,226 @@
-import AppKit
+import Cocoa
 import Vision
+import Carbon.HIToolbox
+import UserNotifications
 
-// MARK: - Screen Capture
+// MARK: - App Delegate
 
-func captureScreenSelection() -> URL? {
-    let tempURL = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("screengrab-ocr-\(ProcessInfo.processInfo.processIdentifier).png")
+class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+    static var instance: AppDelegate!
 
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-    process.arguments = ["-i", "-s", "-x", tempURL.path]
+    private var statusItem: NSStatusItem!
+    private var hotKeyRef: EventHotKeyRef?
+    private var isCapturing = false
 
-    do {
-        try process.run()
-        process.waitUntilExit()
-    } catch {
-        fputs("Error launching screencapture: \(error)\n", stderr)
-        return nil
+    func applicationDidFinishLaunching(_: Notification) {
+        AppDelegate.instance = self
+
+        let nc = UNUserNotificationCenter.current()
+        nc.delegate = self
+        nc.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+
+        setupStatusItem()
+        registerHotKey()
+
+        if !CGPreflightScreenCaptureAccess() {
+            CGRequestScreenCaptureAccess()
+        }
     }
 
-    // Exit status 1 = user pressed Escape
-    guard process.terminationStatus == 0 else { return nil }
-    guard FileManager.default.fileExists(atPath: tempURL.path) else { return nil }
-
-    return tempURL
-}
-
-// MARK: - OCR
-
-func recognizeText(from imageURL: URL) -> String? {
-    guard let cgImageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
-          let cgImage = CGImageSourceCreateImageAtIndex(cgImageSource, 0, nil) else {
-        fputs("Error loading image\n", stderr)
-        return nil
+    func applicationWillTerminate(_: Notification) {
+        if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
     }
 
-    let request = VNRecognizeTextRequest()
-    request.recognitionLevel = .accurate
-    request.usesLanguageCorrection = true
-
-    let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
-    do {
-        try handler.perform([request])
-    } catch {
-        fputs("OCR error: \(error)\n", stderr)
-        return nil
+    // Show banners even while this agent app is "frontmost"
+    func userNotificationCenter(
+        _: UNUserNotificationCenter,
+        willPresent _: UNNotification,
+        withCompletionHandler handler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        handler([.banner, .sound])
     }
 
-    let observations = request.results ?? []
-    let text = observations
-        .compactMap { $0.topCandidates(1).first?.string }
-        .joined(separator: "\n")
+    // MARK: - Menu Bar
 
-    return text.isEmpty ? nil : text
-}
+    private func setupStatusItem() {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        if let button = statusItem.button {
+            button.image = NSImage(
+                systemSymbolName: "text.viewfinder",
+                accessibilityDescription: "ScreengrabOCR"
+            )
+        }
 
-// MARK: - Clipboard
+        let menu = NSMenu()
 
-func copyToClipboard(_ text: String) {
-    let pasteboard = NSPasteboard.general
-    pasteboard.clearContents()
-    pasteboard.setString(text, forType: .string)
-}
+        let capture = NSMenuItem(
+            title: "OCR Screen Region  \u{2318}\u{21E7}2",
+            action: #selector(triggerOCR),
+            keyEquivalent: ""
+        )
+        capture.target = self
+        menu.addItem(capture)
 
-// MARK: - Notification
+        menu.addItem(.separator())
 
-func showNotification(title: String, body: String) {
-    let escapedTitle = title.replacingOccurrences(of: "\"", with: "\\\"")
-    let escapedBody = body.replacingOccurrences(of: "\"", with: "\\\"")
+        let quit = NSMenuItem(
+            title: "Quit ScreengrabOCR",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"
+        )
+        menu.addItem(quit)
 
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-    process.arguments = ["-e", "display notification \"\(escapedBody)\" with title \"\(escapedTitle)\""]
+        statusItem.menu = menu
+    }
 
-    try? process.run()
-    process.waitUntilExit()
+    // MARK: - Global Hotkey (Carbon)
+
+    private func registerHotKey() {
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+
+        let callback: EventHandlerUPP = { _, _, _ in
+            DispatchQueue.main.async { AppDelegate.instance?.triggerOCR() }
+            return noErr
+        }
+
+        InstallEventHandler(GetApplicationEventTarget(), callback, 1, &eventType, nil, nil)
+
+        // "SOCR" as FourCharCode
+        let hotKeyID = EventHotKeyID(signature: OSType(0x534F4352), id: 1)
+        let status = RegisterEventHotKey(
+            UInt32(kVK_ANSI_2),
+            UInt32(cmdKey | shiftKey),
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotKeyRef
+        )
+
+        if status != noErr {
+            notify(
+                title: "ScreengrabOCR",
+                body: "Could not register \u{2318}\u{21E7}2 hotkey (error \(status)). "
+                    + "Another app may have claimed it."
+            )
+        }
+    }
+
+    // MARK: - OCR Pipeline
+
+    @objc func triggerOCR() {
+        guard !isCapturing else { return }
+        isCapturing = true
+
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            defer { isCapturing = false }
+
+            guard let imageURL = captureRegion() else { return }
+            defer { try? FileManager.default.removeItem(at: imageURL) }
+
+            guard let text = ocr(imageURL) else {
+                notify(title: "OCR", body: "No text recognized in selection")
+                return
+            }
+
+            DispatchQueue.main.sync {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
+
+            let words = text.split(whereSeparator: \.isWhitespace).count
+            let lines = text.components(separatedBy: "\n").count
+            notify(title: "Copied to Clipboard", body: "\(words) words, \(lines) lines")
+        }
+    }
+
+    // MARK: - Screen Capture
+
+    private func captureRegion() -> URL? {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("screengrab-\(UUID().uuidString).png")
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        proc.arguments = ["-i", "-s", "-x", url.path]
+
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+        } catch {
+            notify(title: "OCR Error", body: "screencapture failed: \(error.localizedDescription)")
+            return nil
+        }
+
+        // Exit status 1 = user pressed Escape (normal cancel, no notification)
+        guard proc.terminationStatus == 0 else { return nil }
+
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            notify(
+                title: "OCR Error",
+                body: "Screen capture failed. Grant Screen Recording in System Settings > Privacy."
+            )
+            return nil
+        }
+
+        // A blank/tiny capture means permission was silently denied
+        let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+        if size < 100 {
+            try? FileManager.default.removeItem(at: url)
+            notify(
+                title: "OCR Error",
+                body: "Capture is blank. Grant Screen Recording in System Settings > Privacy."
+            )
+            return nil
+        }
+
+        return url
+    }
+
+    // MARK: - OCR (Vision)
+
+    private func ocr(_ url: URL) -> String? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let img = CGImageSourceCreateImageAtIndex(src, 0, nil)
+        else { return nil }
+
+        let req = VNRecognizeTextRequest()
+        req.recognitionLevel = .accurate
+        req.usesLanguageCorrection = true
+
+        try? VNImageRequestHandler(cgImage: img, options: [:]).perform([req])
+
+        let text = (req.results ?? [])
+            .compactMap { $0.topCandidates(1).first?.string }
+            .joined(separator: "\n")
+
+        return text.isEmpty ? nil : text
+    }
+
+    // MARK: - Notifications
+
+    private func notify(title: String, body: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.threadIdentifier = "screengrab-ocr"
+
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(
+                identifier: UUID().uuidString,
+                content: content,
+                trigger: nil
+            )
+        )
+    }
 }
 
 // MARK: - Main
 
-let imageURL = captureScreenSelection()
-
-guard let imageURL = imageURL else {
-    // User cancelled (Escape) — silent exit
-    exit(0)
-}
-
-defer {
-    try? FileManager.default.removeItem(at: imageURL)
-}
-
-guard let text = recognizeText(from: imageURL) else {
-    showNotification(title: "OCR Failed", body: "No text recognized — check Screen Recording permission")
-    fputs("No text recognized\n", stderr)
-    exit(0)
-}
-
-copyToClipboard(text)
-
-let lines = text.components(separatedBy: "\n").count
-let words = text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
-showNotification(title: "Text Copied to Clipboard", body: "\(words) words, \(lines) lines")
-
-print(text)
+let app = NSApplication.shared
+app.setActivationPolicy(.accessory)
+let delegate = AppDelegate()
+app.delegate = delegate
+app.run()
