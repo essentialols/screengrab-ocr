@@ -2,6 +2,7 @@
 screengrab-ocr
 *.o
 .build/
+build/
 
 # Credentials
 *.pickle
