@@ -2,6 +2,28 @@ import Cocoa
 import Vision
 import Carbon.HIToolbox
 import UserNotifications
+import os.log
+
+private let log = OSLog(subsystem: "com.ingmarsturm.screengrab-ocr", category: "main")
+private let logFile = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Logs/screengrab-ocr.log")
+
+private func debugLog(_ msg: String) {
+    let ts = ISO8601DateFormatter().string(from: Date())
+    let line = "[\(ts)] \(msg)\n"
+    os_log("%{public}@", log: log, type: .info, msg)
+    if let data = line.data(using: .utf8) {
+        if FileManager.default.fileExists(atPath: logFile.path) {
+            if let fh = try? FileHandle(forWritingTo: logFile) {
+                fh.seekToEndOfFile()
+                fh.write(data)
+                fh.closeFile()
+            }
+        } else {
+            try? data.write(to: logFile)
+        }
+    }
+}
 
 // MARK: - App Delegate
 
@@ -14,6 +36,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     func applicationDidFinishLaunching(_: Notification) {
         AppDelegate.instance = self
+        debugLog("=== ScreengrabOCR launched (PID \(ProcessInfo.processInfo.processIdentifier)) ===")
 
         let nc = UNUserNotificationCenter.current()
         nc.delegate = self
@@ -22,7 +45,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         setupStatusItem()
         registerHotKey()
 
-        if !CGPreflightScreenCaptureAccess() {
+        let hasScreenCapture = CGPreflightScreenCaptureAccess()
+        debugLog("Screen capture permission: \(hasScreenCapture)")
+        if !hasScreenCapture {
             CGRequestScreenCaptureAccess()
         }
     }
@@ -111,27 +136,49 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - OCR Pipeline
 
     @objc func triggerOCR() {
-        guard !isCapturing else { return }
+        debugLog("triggerOCR called, isCapturing=\(isCapturing)")
+        guard !isCapturing else {
+            debugLog("BLOCKED: isCapturing is true, skipping")
+            return
+        }
         isCapturing = true
 
         DispatchQueue.global(qos: .userInitiated).async { [self] in
-            defer { isCapturing = false }
+            defer {
+                isCapturing = false
+                debugLog("isCapturing reset to false")
+            }
 
-            guard let imageURL = captureRegion() else { return }
+            debugLog("calling captureRegion...")
+            guard let imageURL = captureRegion() else {
+                debugLog("captureRegion returned nil")
+                return
+            }
             defer { try? FileManager.default.removeItem(at: imageURL) }
 
+            let fileSize = (try? FileManager.default.attributesOfItem(atPath: imageURL.path)[.size] as? Int) ?? 0
+            debugLog("capture file: \(imageURL.lastPathComponent), size=\(fileSize) bytes")
+
+            debugLog("calling ocr...")
+            let ocrStart = Date()
             guard let text = ocr(imageURL) else {
+                let elapsed = Date().timeIntervalSince(ocrStart)
+                debugLog("ocr returned nil after \(String(format: "%.1f", elapsed))s")
                 notify(title: "OCR", body: "No text recognized in selection")
                 return
             }
+            let elapsed = Date().timeIntervalSince(ocrStart)
+            debugLog("ocr returned \(text.count) chars in \(String(format: "%.1f", elapsed))s")
 
             DispatchQueue.main.sync {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
+                let ok = NSPasteboard.general.setString(text, forType: .string)
+                debugLog("clipboard setString result: \(ok)")
             }
 
             let words = text.split(whereSeparator: \.isWhitespace).count
             let lines = text.components(separatedBy: "\n").count
+            debugLog("copied \(words) words, \(lines) lines to clipboard")
             notify(title: "Copied to Clipboard", body: "\(words) words, \(lines) lines")
         }
     }
@@ -182,20 +229,33 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     // MARK: - OCR (Vision)
 
     private func ocr(_ url: URL) -> String? {
+        debugLog("ocr: loading image from \(url.path)")
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               let img = CGImageSourceCreateImageAtIndex(src, 0, nil)
-        else { return nil }
+        else {
+            debugLog("ocr: FAILED to load CGImage")
+            return nil
+        }
+        debugLog("ocr: image loaded, \(img.width)x\(img.height)")
 
         let req = VNRecognizeTextRequest()
         req.recognitionLevel = .accurate
         req.usesLanguageCorrection = true
 
-        try? VNImageRequestHandler(cgImage: img, options: [:]).perform([req])
+        debugLog("ocr: starting VNImageRequestHandler.perform...")
+        do {
+            try VNImageRequestHandler(cgImage: img, options: [:]).perform([req])
+        } catch {
+            debugLog("ocr: Vision THREW: \(error)")
+            return nil
+        }
+        debugLog("ocr: Vision returned \(req.results?.count ?? 0) observations")
 
         let text = (req.results ?? [])
             .compactMap { $0.topCandidates(1).first?.string }
             .joined(separator: "\n")
 
+        debugLog("ocr: extracted \(text.count) chars")
         return text.isEmpty ? nil : text
     }
 
