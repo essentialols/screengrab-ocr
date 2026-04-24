@@ -49,3 +49,13 @@ This builds the app, installs it to `~/Applications`, adds it as a Login Item, a
 ```sh
 ./uninstall.sh
 ```
+
+## Known Limitations
+
+- macOS only (relies on Apple Vision and the `screencapture` binary).
+- The Cmd+Shift+2 hotkey is fixed in source. If another app has claimed it, you will see a notification at launch and the menu bar item is the only trigger.
+- Screen Recording permission must be granted manually on first run, per macOS policy.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
