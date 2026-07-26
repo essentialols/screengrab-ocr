@@ -145,8 +145,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             defer {
-                isCapturing = false
-                debugLog("isCapturing reset to false")
+                DispatchQueue.main.async {
+                    self.isCapturing = false
+                    debugLog("isCapturing reset to false")
+                }
             }
 
             debugLog("calling captureRegion...")
