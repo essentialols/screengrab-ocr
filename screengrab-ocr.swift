@@ -41,6 +41,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     private var statusItem: NSStatusItem!
     private var hotKeyRef: EventHotKeyRef?
+    private var eventHandlerRef: EventHandlerRef?
     private var isCapturing = false
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -63,6 +64,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     func applicationWillTerminate(_: Notification) {
         if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
+        if let handler = eventHandlerRef { RemoveEventHandler(handler) }
     }
 
     // Show banners even while this agent app is "frontmost"
@@ -120,7 +122,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             return noErr
         }
 
-        InstallEventHandler(GetApplicationEventTarget(), callback, 1, &eventType, nil, nil)
+        InstallEventHandler(GetApplicationEventTarget(), callback, 1, &eventType, nil, &eventHandlerRef)
 
         // "SOCR" as FourCharCode
         let hotKeyID = EventHotKeyID(signature: OSType(0x534F4352), id: 1)
