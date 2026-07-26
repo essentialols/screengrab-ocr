@@ -9,6 +9,7 @@ rm -rf "build/${APP_NAME}.app"
 mkdir -p "$APP_DIR/MacOS"
 
 swiftc -O \
+    -target arm64-apple-macos12.0 \
     -framework Vision \
     -framework AppKit \
     -framework Carbon \
