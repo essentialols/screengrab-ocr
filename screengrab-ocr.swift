@@ -7,12 +7,15 @@ import os.log
 private let log = OSLog(subsystem: "com.ingmarsturm.screengrab-ocr", category: "main")
 private let logFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Logs/screengrab-ocr.log")
+private let logQueue = DispatchQueue(label: "com.ingmarsturm.screengrab-ocr.log")
+private let logDateFormatter = ISO8601DateFormatter()
 
 private func debugLog(_ msg: String) {
-    let ts = ISO8601DateFormatter().string(from: Date())
-    let line = "[\(ts)] \(msg)\n"
     os_log("%{public}@", log: log, type: .info, msg)
-    if let data = line.data(using: .utf8) {
+    logQueue.async {
+        let ts = logDateFormatter.string(from: Date())
+        let line = "[\(ts)] \(msg)\n"
+        guard let data = line.data(using: .utf8) else { return }
         if FileManager.default.fileExists(atPath: logFile.path) {
             if let fh = try? FileHandle(forWritingTo: logFile) {
                 fh.seekToEndOfFile()
