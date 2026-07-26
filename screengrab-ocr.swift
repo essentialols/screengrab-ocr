@@ -213,7 +213,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
 
         // Exit status 1 = user pressed Escape (normal cancel, no notification)
-        guard proc.terminationStatus == 0 else { return nil }
+        guard proc.terminationStatus == 0 else {
+            if proc.terminationStatus != 1 {
+                notify(title: "OCR Error", body: "screencapture exited with code \(proc.terminationStatus)")
+            }
+            return nil
+        }
 
         guard FileManager.default.fileExists(atPath: url.path) else {
             notify(
