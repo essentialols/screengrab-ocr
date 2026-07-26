@@ -16,6 +16,12 @@ private func debugLog(_ msg: String) {
         let ts = logDateFormatter.string(from: Date())
         let line = "[\(ts)] \(msg)\n"
         guard let data = line.data(using: .utf8) else { return }
+        let logSize = (try? FileManager.default.attributesOfItem(atPath: logFile.path)[.size] as? Int) ?? 0
+        if logSize > 1_048_576 {
+            let rotated = logFile.appendingPathExtension("1")
+            try? FileManager.default.removeItem(at: rotated)
+            try? FileManager.default.moveItem(at: logFile, to: rotated)
+        }
         if FileManager.default.fileExists(atPath: logFile.path) {
             if let fh = try? FileHandle(forWritingTo: logFile) {
                 fh.seekToEndOfFile()
