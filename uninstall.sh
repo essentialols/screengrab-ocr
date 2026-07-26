@@ -22,5 +22,8 @@ rm -rf "$HOME/Applications/${APP_NAME}.app"
 # Remove old Quick Action too (if it exists)
 rm -rf "$HOME/Library/Services/OCR Screenshot.workflow"
 
+# Remove log files
+rm -f "$HOME/Library/Logs/screengrab-ocr.log" "$HOME/Library/Logs/screengrab-ocr.log.1"
+
 echo "Uninstalled ScreengrabOCR"
 echo "Note: Screen Recording permission entry remains in System Settings (remove manually if desired)"
