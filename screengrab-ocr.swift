@@ -7,12 +7,21 @@ import os.log
 private let log = OSLog(subsystem: "com.ingmarsturm.screengrab-ocr", category: "main")
 private let logFile = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Logs/screengrab-ocr.log")
+private let logQueue = DispatchQueue(label: "com.ingmarsturm.screengrab-ocr.log")
+private let logDateFormatter = ISO8601DateFormatter()
 
 private func debugLog(_ msg: String) {
-    let ts = ISO8601DateFormatter().string(from: Date())
-    let line = "[\(ts)] \(msg)\n"
     os_log("%{public}@", log: log, type: .info, msg)
-    if let data = line.data(using: .utf8) {
+    logQueue.async {
+        let ts = logDateFormatter.string(from: Date())
+        let line = "[\(ts)] \(msg)\n"
+        guard let data = line.data(using: .utf8) else { return }
+        let logSize = (try? FileManager.default.attributesOfItem(atPath: logFile.path)[.size] as? Int) ?? 0
+        if logSize > 1_048_576 {
+            let rotated = logFile.appendingPathExtension("1")
+            try? FileManager.default.removeItem(at: rotated)
+            try? FileManager.default.moveItem(at: logFile, to: rotated)
+        }
         if FileManager.default.fileExists(atPath: logFile.path) {
             if let fh = try? FileHandle(forWritingTo: logFile) {
                 fh.seekToEndOfFile()
@@ -32,6 +41,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     private var statusItem: NSStatusItem!
     private var hotKeyRef: EventHotKeyRef?
+    private var eventHandlerRef: EventHandlerRef?
     private var isCapturing = false
 
     func applicationDidFinishLaunching(_: Notification) {
@@ -54,6 +64,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     func applicationWillTerminate(_: Notification) {
         if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
+        if let handler = eventHandlerRef { RemoveEventHandler(handler) }
     }
 
     // Show banners even while this agent app is "frontmost"
@@ -111,7 +122,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             return noErr
         }
 
-        InstallEventHandler(GetApplicationEventTarget(), callback, 1, &eventType, nil, nil)
+        InstallEventHandler(GetApplicationEventTarget(), callback, 1, &eventType, nil, &eventHandlerRef)
 
         // "SOCR" as FourCharCode
         let hotKeyID = EventHotKeyID(signature: OSType(0x534F4352), id: 1)
@@ -145,8 +156,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
         DispatchQueue.global(qos: .userInitiated).async { [self] in
             defer {
-                isCapturing = false
-                debugLog("isCapturing reset to false")
+                DispatchQueue.main.async {
+                    self.isCapturing = false
+                    debugLog("isCapturing reset to false")
+                }
             }
 
             debugLog("calling captureRegion...")
@@ -202,7 +215,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
 
         // Exit status 1 = user pressed Escape (normal cancel, no notification)
-        guard proc.terminationStatus == 0 else { return nil }
+        guard proc.terminationStatus == 0 else {
+            if proc.terminationStatus != 1 {
+                notify(title: "OCR Error", body: "screencapture exited with code \(proc.terminationStatus)")
+            }
+            return nil
+        }
 
         guard FileManager.default.fileExists(atPath: url.path) else {
             notify(
