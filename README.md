@@ -2,13 +2,7 @@
 
 Native macOS screen-region optical character recognition (OCR). Press a global hotkey, select part of the screen, recognize text locally with Apple Vision, and copy the result to the clipboard.
 
-## Current status
-
-This is a small, single-purpose native menu-bar app. The current implementation is the `.app`-bundle version introduced after the older Automator Quick Action approach; `install.sh` removes that legacy Quick Action if it is still present.
-
-The last substantive code hardening in this repository was completed on **2026-07-26**. Treat that date as repository history, not as a claim that the app has been revalidated against every newer macOS release.
-
-The current build script targets **Apple Silicon (`arm64`) on macOS 12 or newer**.
+A small, single-purpose native menu-bar app. It is built as a `.app` bundle (an earlier Automator Quick Action version is replaced; `install.sh` removes the old Quick Action if present). The build targets Apple Silicon (`arm64`) on macOS 12 or newer.
 
 ## What it does
 
@@ -48,7 +42,7 @@ The installer:
 5. replaces any existing `ScreengrabOCR` Login Item with the newly installed app; and
 6. launches the app.
 
-On first launch, allow notifications if desired and grant Screen Recording access in **System Settings → Privacy & Security → Screen Recording**.
+On first launch, allow notifications if desired and grant Screen Recording access in **System Settings -> Privacy & Security -> Screen Recording**.
 
 ## Use
 
@@ -90,33 +84,21 @@ The macOS Screen Recording permission entry is **not** removed automatically. Re
 
 | Path | Purpose |
 | --- | --- |
-| `screengrab-ocr.swift` | App source: menu bar, global hotkey, capture, Apple Vision OCR, clipboard, notifications, and logging |
-| `Info.plist` | Bundle identity, minimum macOS version, agent-app behavior, and Screen Recording usage description |
+| `screengrab-ocr.swift` | App source: menu bar, global hotkey, capture, Apple Vision OCR, clipboard, notifications, logging |
+| `Info.plist` | Bundle identity, minimum macOS version, menu-bar-app behavior, Screen Recording usage description |
 | `build.sh` | Builds and ad-hoc signs `build/ScreengrabOCR.app` for `arm64-apple-macos12.0` |
-| `install.sh` | Builds, installs to `~/Applications`, creates the Login Item, and launches the app |
-| `uninstall.sh` | Removes installed/runtime artifacts owned by this project |
-| `.gitignore` | Excludes build products and local generated files |
+| `install.sh` | Builds, installs to `~/Applications`, creates the Login Item, launches the app |
+| `uninstall.sh` | Removes installed and runtime artifacts |
 | `LICENSE` | MIT license |
 
-The flat layout is intentional. `build.sh` directly expects `screengrab-ocr.swift` and `Info.plist` beside it, while `install.sh` invokes `./build.sh` relative to the repository root. Moving those files into conventional `src/` or `scripts/` folders would require coordinated path changes and provides little navigational benefit at this repository size.
-
-## Development and lightweight validation
-
-For documentation or shell-only changes, useful low-cost checks are:
-
-```sh
-bash -n build.sh install.sh uninstall.sh
-plutil -lint Info.plist
-```
-
-To validate the native build on a compatible Mac:
+## Building and checking
 
 ```sh
 ./build.sh
 codesign --verify --deep --strict build/ScreengrabOCR.app
 ```
 
-A full behavioral check additionally requires granting Screen Recording permission and exercising both the hotkey and menu-bar capture path. There is currently no automated test suite tracked in this repository, so do not describe a build-only check as end-to-end validation.
+Shell and plist sanity checks: `bash -n build.sh install.sh uninstall.sh` and `plutil -lint Info.plist`. There is no automated test suite; trying the hotkey and the menu-bar capture by hand (with Screen Recording permission granted) is the real check.
 
 ## Known limitations
 
